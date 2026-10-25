@@ -13,7 +13,7 @@ import threading
 import time
 import unicodedata
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 from contextlib import contextmanager
@@ -66,6 +66,9 @@ _EBOOK_INPUT_RECOVERY_IDENTITY_FIELDS = (
     "ebook_source", "ebook_source_id", "ebook_filename", "original_ebook_filename",
     "kosync_doc_id", "sync_mode",
 )
+
+# Audio positions are exact, so 99% is the end (KOReader's page-count finish uses 95%).
+_LISTENING_FINISHED_PROGRESS = 0.99
 
 _READING_SESSION_DESTINATIONS = {
     "grimmory": "grimmory_status",
@@ -5389,15 +5392,13 @@ class DatabaseService:
             dates = self._get_koreader_activity_dates(session, md5s, tz_name)
             return [day.isoformat() for day in sorted(dates)]
 
-    def get_koreader_heatmap(self, year: int, tz_name: str) -> list[dict]:
-        """Get KOReader daily totals for one calendar year."""
+    def get_koreader_heatmap(self, start_date: date, end_date: date, tz_name: str) -> list[dict]:
+        """Get KOReader daily totals for each date from start_date through end_date."""
         with self.get_session() as session:
             md5s = self._get_all_koreader_active_md5s(session)
             if not md5s:
                 return []
 
-            start_date = datetime(year, 1, 1).date()
-            end_date = datetime(year, 12, 31).date()
             return self._build_koreader_daily_totals(
                 session,
                 md5s,
@@ -5953,7 +5954,8 @@ class DatabaseService:
                 finished_books.append({
                     "bookKey": book_key, "absId": ctx["absId"],
                     "title": ctx["title"], "author": ctx["author"],
-                    "finishedAt": int(last_end), "month": finished_dt.month,
+                    "finishedAt": int(last_end),
+                    "finishedDate": finished_dt.date().isoformat(), "month": finished_dt.month,
                 })
                 months[finished_dt.month - 1]["finished"] += 1
             finished_books.sort(key=lambda item: item["finishedAt"], reverse=True)
@@ -5994,6 +5996,15 @@ class DatabaseService:
                 ReadingSession.start_progress == start_progress,
                 ReadingSession.end_progress == end_progress,
                 ReadingSession.leader_client == leader_client,
+                ReadingSession.user_id == uid,
+            ).first() is not None
+
+    def has_reading_history(self, abs_id: str, user_id: int = None) -> bool:
+        """Whether the (ambient) user has any recorded session for abs_id."""
+        uid = self._resolve_uid(user_id)
+        with self.get_session() as session:
+            return session.query(ReadingSession.id).filter(
+                ReadingSession.abs_id == abs_id,
                 ReadingSession.user_id == uid,
             ).first() is not None
 
@@ -6229,6 +6240,11 @@ class DatabaseService:
                 book_title = db_session.query(
                     func.coalesce(func.nullif(Book.abs_title, ''), func.nullif(Book.audio_title, ''))
                 ).filter(Book.abs_id == abs_id).scalar()
+                if not book_title:
+                    # A removed book keeps the name its earlier sessions recorded.
+                    book_title = db_session.query(ReadingSession.book_title).filter(
+                        ReadingSession.abs_id == abs_id, func.nullif(ReadingSession.book_title, '').isnot(None),
+                    ).order_by(ReadingSession.end_time.desc()).limit(1).scalar()
             session = ReadingSession(
                 abs_id=abs_id,
                 session_type=session_type,
@@ -6348,6 +6364,32 @@ class DatabaseService:
         for start_time, duration in rows:
             days[self._local_date_from_epoch(start_time, tz_name)] += int(max(duration or 0, 0))
         return dict(days)
+
+    def get_listening_finished_books(self, tz_name: str) -> list[dict]:
+        """Audiobooks the ambient user's own sessions reached the end of, newest first,
+        each at its first finish, in the stats-page finished-book shape."""
+        from sqlalchemy import func
+        uid = self._resolve_uid(None)
+        tz = ZoneInfo(tz_name)
+        with self.get_session() as session:
+            rows = session.query(
+                ReadingSession.abs_id, func.min(ReadingSession.end_time),
+                func.max(Book.abs_title), func.max(Book.audio_title), func.max(ReadingSession.book_title),
+            ).outerjoin(Book, Book.abs_id == ReadingSession.abs_id).filter(
+                ReadingSession.session_type == 'AUDIOBOOK', ReadingSession.user_id == uid,
+                ReadingSession.end_progress >= _LISTENING_FINISHED_PROGRESS,
+            ).group_by(ReadingSession.abs_id).all()
+        books = []
+        for abs_id, finished_at, abs_title, audio_title, book_title in rows:
+            finished_dt = datetime.fromtimestamp(float(finished_at), tz)
+            books.append({
+                "bookKey": f"abs:{abs_id}", "absId": abs_id,
+                "title": abs_title or audio_title or book_title or "Unknown book", "author": None,
+                "finishedAt": int(finished_at),
+                "finishedDate": finished_dt.date().isoformat(), "month": finished_dt.month,
+            })
+        books.sort(key=lambda book: book["finishedAt"], reverse=True)
+        return books
 
     def get_recent_listening_sessions(self, limit: int = 10) -> list[dict]:
         """Newest-first AUDIOBOOK sessions of the ambient user, in the stats-page session shape."""
