@@ -12021,12 +12021,36 @@ def _build_listening_book_list():
     return result
 
 
-def _abs_listening_book_list(items, progress, titles):
+def _abs_last_listened(abs_client, item_ids, per_page=100, max_pages=10):
+    """Epoch seconds of each item's newest ABS listening session.
+
+    ABS returns sessions newest first, so paging stops once every item has a date.
+    Progress ``lastUpdate`` is no substitute: the bridge moves it when a reader leads.
+    """
+    wanted = set(item_ids or ())
+    found = {}
+    for page in range(max_pages):
+        if not wanted - found.keys():
+            break
+        sessions = abs_client.get_listening_sessions(limit=per_page, page=page)
+        if not isinstance(sessions, list):
+            break
+        for session in sessions:
+            item_id = session.get("libraryItemId") if isinstance(session, dict) else None
+            if item_id in wanted and item_id not in found and session.get("updatedAt"):
+                found[item_id] = int(session["updatedAt"]) // 1000
+        if len(sessions) < per_page:
+            break
+    return found
+
+
+def _abs_listening_book_list(items, last_listened, titles):
     """Per-book rollup from ABS's own listening time, so the rows add up to its totals.
 
-    ``titles`` maps BookBridge abs_ids to titles. ABS gives no per-book session count.
+    ``last_listened`` maps item ids to epoch seconds and ``titles`` maps BookBridge
+    abs_ids to titles. ABS gives no per-book session count.
     """
-    progress = progress if isinstance(progress, dict) else {}
+    last_listened = last_listened or {}
     result = []
     for item_id, item in (items or {}).items():
         total_seconds = int(round(float((item or {}).get("timeListening") or 0)))
@@ -12035,7 +12059,6 @@ def _abs_listening_book_list(items, progress, titles):
         metadata = item.get("mediaMetadata") or {}
         authors = metadata.get("authors") or []
         author = ", ".join(a.get("name") for a in authors if isinstance(a, dict) and a.get("name"))
-        last_update = (progress.get(item_id) or {}).get("lastUpdate")
         result.append({
             "bookKey": f"abs:{item_id}",
             "absId": item_id,
@@ -12045,7 +12068,7 @@ def _abs_listening_book_list(items, progress, titles):
             "totalSeconds": total_seconds,
             "sessionCount": None,
             "avgSessionSeconds": None,
-            "lastReadAt": int(float(last_update) / 1000) if last_update else None,
+            "lastReadAt": last_listened.get(item_id),
         })
     result.sort(key=lambda item: int(item.get("lastReadAt") or 0), reverse=True)
     return result
@@ -12116,8 +12139,9 @@ def _build_listening_stats_payload(tz):
     if use_abs:
         progress = abs_client.get_all_progress_raw()
         finished_books = _abs_finished_books(progress, raw_stats.get("items"), tz, abs_client)
+        items = raw_stats.get("items") or {}
         books = _abs_listening_book_list(
-            raw_stats.get("items") or {}, progress,
+            items, _abs_last_listened(abs_client, set(items)),
             {book.abs_id: book.abs_title for book in database_service.get_all_books()},
         )
     else:

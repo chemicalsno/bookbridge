@@ -516,8 +516,8 @@ class ABSClient:
             logger.error(f"ABS: Error fetching listening stats: {e}", exc_info=True)
         return None
 
-    def get_listening_sessions(self, limit=10):
-        """Fetch recent listening sessions for the current ABS user."""
+    def get_listening_sessions(self, limit=10, page=0):
+        """Fetch one page of the current ABS user's listening sessions, newest first."""
         if not self.is_configured():
             return []
 
@@ -526,7 +526,7 @@ class ABSClient:
         try:
             r = self.session.get(
                 url,
-                params={"itemsPerPage": int(limit or 10)},
+                params={"itemsPerPage": int(limit or 10), "page": int(page or 0)},
                 timeout=self.timeout,
             )
             if r.status_code == 200:

@@ -134,11 +134,13 @@ class TestStatsUserScoping(unittest.TestCase):
             "days": {"2026-04-07": 900}, "totalTime": 900, "recentSessions": [],
             "items": {"a": {"timeListening": 900, "mediaMetadata": {"title": "A"}}},
         }
-        self.user_abs.get_all_progress_raw.return_value = {"a": {"lastUpdate": 1775570400000}}
+        self.user_abs.get_all_progress_raw.return_value = {"a": {"lastUpdate": 1}}
+        self.user_abs.get_listening_sessions.return_value = [{"libraryItemId": "a", "updatedAt": 1775570400000}]
         with self.app.test_request_context('/api/stats'), \
                 patch.object(self.ws, 'current_user', return_value=_user(1)):
             payload = self.ws._build_listening_stats_payload(self.ws._get_stats_timezone())
         self.assertEqual([(b["absId"], b["totalSeconds"]) for b in payload["books"]], [("a", 900)])
+        self.assertEqual(payload["books"][0]["lastReadAt"], 1775570400)
         self.mock_database_service.get_all_reading_stats.assert_not_called()
         self.user_abs.get_all_progress_raw.assert_called_once()
 
