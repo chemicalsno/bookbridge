@@ -12021,6 +12021,36 @@ def _build_listening_book_list():
     return result
 
 
+def _abs_listening_book_list(items, progress, titles):
+    """Per-book rollup from ABS's own listening time, so the rows add up to its totals.
+
+    ``titles`` maps BookBridge abs_ids to titles. ABS gives no per-book session count.
+    """
+    progress = progress if isinstance(progress, dict) else {}
+    result = []
+    for item_id, item in (items or {}).items():
+        total_seconds = int(round(float((item or {}).get("timeListening") or 0)))
+        if total_seconds <= 0:
+            continue
+        metadata = item.get("mediaMetadata") or {}
+        authors = metadata.get("authors") or []
+        author = ", ".join(a.get("name") for a in authors if isinstance(a, dict) and a.get("name"))
+        last_update = (progress.get(item_id) or {}).get("lastUpdate")
+        result.append({
+            "bookKey": f"abs:{item_id}",
+            "absId": item_id,
+            "isLinked": item_id in titles,
+            "title": metadata.get("title") or titles.get(item_id) or "Unknown book",
+            "author": author or None,
+            "totalSeconds": total_seconds,
+            "sessionCount": None,
+            "avgSessionSeconds": None,
+            "lastReadAt": int(float(last_update) / 1000) if last_update else None,
+        })
+    result.sort(key=lambda item: int(item.get("lastReadAt") or 0), reverse=True)
+    return result
+
+
 def _local_listening_stats(tz):
     """ABS-shaped listening stats from the bridge's own AUDIOBOOK sessions, or None if empty."""
     days = database_service.get_listening_days(getattr(tz, "key", str(tz)))
