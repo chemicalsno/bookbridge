@@ -12113,9 +12113,16 @@ def _build_listening_stats_payload(tz):
         total_days=len(all_activity_dates),
         reference_date=datetime.now(tz).date(),
     )
-    finished_books = _abs_finished_books(
-        abs_client.get_all_progress_raw(), raw_stats.get("items"), tz, abs_client
-    ) if use_abs else database_service.get_listening_finished_books(getattr(tz, "key", str(tz)))
+    if use_abs:
+        progress = abs_client.get_all_progress_raw()
+        finished_books = _abs_finished_books(progress, raw_stats.get("items"), tz, abs_client)
+        books = _abs_listening_book_list(
+            raw_stats.get("items") or {}, progress,
+            {book.abs_id: book.abs_title for book in database_service.get_all_books()},
+        )
+    else:
+        finished_books = database_service.get_listening_finished_books(getattr(tz, "key", str(tz)))
+        books = _build_listening_book_list()
     summary["itemsFinished"] = len(finished_books)
     summary["daysListened"] = len(all_activity_dates)
 
@@ -12133,7 +12140,7 @@ def _build_listening_stats_payload(tz):
         "trackedBookIds": sorted({
             session.get("absId") for session in normalized_sessions if session.get("absId")
         }),
-        "books": _build_listening_book_list(),
+        "books": books,
         "yearlyRecap": _build_listening_yearly_recap(all_days, datetime.now(tz).year, finished_books, tz),
     }
 
